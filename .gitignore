@@ -1,0 +1,3 @@
+deploy/nginx/secrets/*
+!deploy/nginx/secrets/.gitkeep
+data/

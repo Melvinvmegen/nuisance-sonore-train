@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rails Semprún</title>
+<meta name="description" content="Passages des trains de Paris Gare de Lyon en temps réel, pour les riverains de la rue Jorge Semprún.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚆</text></svg>">
+<style>
+  :root {
+    --bg: #f5f4f0; --card: #ffffff; --ink: #1c1d1f; --muted: #6b6e75; --line: #e3e1db;
+    --green: #1f8a4c; --green-bg: #e3f4ea; --orange: #c46a00; --orange-bg: #fdf0dc;
+    --red: #c62828; --red-bg: #fde5e5; --accent: #2b4c9b; --violet: #7b3fc4; --violet-bg: #f0e7fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121315; --card: #1c1e21; --ink: #ecebe8; --muted: #9a9ca3; --line: #2d3035;
+      --green: #4cc27f; --green-bg: #15301f; --orange: #f0a443; --orange-bg: #352611;
+      --red: #ff6b6b; --red-bg: #3a1717; --accent: #8fb0ff; --violet: #c49bff; --violet-bg: #2a1d3d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .clock { font-variant-numeric: tabular-nums; font-size: 28px; font-weight: 600; }
+  .badge-src { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 99px; margin-left: 6px; vertical-align: middle; }
+  .badge-src.live { background: var(--green-bg); color: var(--green); }
+  .badge-src.demo { background: var(--orange-bg); color: var(--orange); }
+
+  .status { border-radius: 16px; padding: 20px; margin-bottom: 14px; display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; align-items: center; }
+  .status .icon { font-size: 44px; grid-row: span 2; }
+  .status .title { font-size: 22px; font-weight: 700; }
+  .status .detail { font-size: 14px; }
+  .s-green { background: var(--green-bg); color: var(--green); }
+  .s-orange { background: var(--orange-bg); color: var(--orange); }
+  .s-red { background: var(--red-bg); color: var(--red); }
+  .status .detail b { font-variant-numeric: tabular-nums; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+
+  .strip { position: relative; height: 44px; background: var(--red-bg); border-radius: 8px; overflow: hidden; }
+  .strip .calm { position: absolute; top: 0; bottom: 0; background: var(--green-bg); border-left: 1px solid var(--card); border-right: 1px solid var(--card); }
+  .strip .tick { position: absolute; top: 6px; bottom: 6px; width: 3px; margin-left: -1.5px; border-radius: 2px; background: var(--red); }
+  .strip .tick.dep { background: var(--orange); }
+  .scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+  .strip .nowmk { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent); z-index: 1; }
+  .card h2:has(.h2r) { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 12px; }
+  .card h2 .h2r { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .hrow { display: grid; grid-template-columns: 36px 1fr 118px; gap: 8px; align-items: center; margin: 3px 0; }
+  .hrow .hl { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .hrow .hs { font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .hrow.past { opacity: .45; }
+  .hrow.cur .hl { color: var(--accent); font-weight: 700; }
+  .strip.sm { height: 18px; border-radius: 4px; }
+  .strip.sm .tick { top: 3px; bottom: 3px; width: 2px; margin-left: -1px; }
+  .hrow .hs .long { display: inline; }
+  @media (max-width: 480px) { .hrow { grid-template-columns: 30px 1fr 54px; } .hrow .hs .long { display: none; } }
+
+  ol.timeline { list-style: none; margin: 0; padding: 0; }
+  .row { display: grid; grid-template-columns: 62px 1fr auto 40px; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+  .row:first-child { border-top: 0; }
+  .row.past > :not(.nzc) { opacity: .45; }
+  .row.noisy { box-shadow: inset 3px 0 0 var(--violet); background: linear-gradient(90deg, var(--violet-bg), transparent 60%); }
+  .row.noisy .t { padding-left: 8px; }
+  .nzc { display: flex; justify-content: flex-end; }
+  .nz { font: inherit; font-size: 16px; width: 36px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); cursor: pointer; filter: grayscale(1); opacity: .55; }
+  .nz:hover { opacity: .9; }
+  .nz[aria-pressed="true"] { filter: none; opacity: 1; background: var(--violet-bg); border-color: var(--violet); }
+  .tagnz { font-size: 11px; font-weight: 700; color: var(--violet); }
+  .strip .tick.nzt { background: var(--violet); width: 5px; margin-left: -2.5px; top: 2px; bottom: 2px; z-index: 1; }
+  .strip.sm .tick.nzt { width: 3px; margin-left: -1.5px; top: 1px; bottom: 1px; }
+  .mine { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .mine h3 { font-size: 13px; margin: 0 0 6px; }
+  .mine ul { list-style: none; padding: 0; margin: 0 0 8px; font-size: 13px; }
+  .mine li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px dashed var(--line); }
+  .mine li:first-child { border-top: 0; }
+  .mine .hint { font-size: 12px; color: var(--muted); }
+  .btn { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; }
+  .btn.x { padding: 0 8px; }
+  .row .t { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 17px; }
+  .row .t s { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+  .row .what { min-width: 0; }
+  .row .what .l1 { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .row .what .l2 { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pill { font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 99px; color: #fff; }
+  .kind { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; }
+  .delay { font-size: 12px; font-weight: 600; color: var(--orange); }
+  .cd { text-align: right; font-variant-numeric: tabular-nums; font-size: 14px; color: var(--muted); white-space: nowrap; }
+  .cd.soon { color: var(--red); font-weight: 700; }
+  .nowline { border-top: 2px solid var(--accent); position: relative; margin: 4px 0; }
+  .nowline span { position: absolute; right: 0; top: -10px; background: var(--card); color: var(--accent); font-size: 11px; font-weight: 700; padding: 0 4px; }
+
+  details summary { cursor: pointer; font-weight: 600; }
+  .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 12px; }
+  .settings label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  .settings label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
+  .settings input[type=number] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); width: 100%; }
+  .foot { color: var(--muted); font-size: 12px; margin-top: 20px; }
+  .err { color: var(--red); font-size: 13px; }
+  @media (max-width: 480px) { .clock { font-size: 22px; } .status .title { font-size: 18px; } .status .icon { font-size: 34px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>🚆 Trains Gare de Lyon <span id="src" class="badge-src"></span></h1>
+      <div class="sub">Rue Jorge Semprún · passages estimés le long des voies</div>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+  </header>
+
+  <section id="status" class="status s-green">
+    <div class="icon" id="st-icon">⏳</div>
+    <div class="title" id="st-title">Chargement…</div>
+    <div class="detail" id="st-detail"></div>
+  </section>
+
+  <section class="card">
+    <h2>60 prochaines minutes</h2>
+    <div class="strip" id="strip"></div>
+    <div class="scale" id="scale"></div>
+    <div class="legend">
+      <span><i style="background:var(--green-bg);border:1px solid var(--green)"></i>Calme (fenêtres ouvertes)</span>
+      <span><i style="background:var(--red)"></i>Arrivée</span>
+      <span id="lg-dep"><i style="background:var(--orange)"></i>Départ</span>
+      <span><i style="background:var(--violet)"></i>Mes trains bruyants 🔊</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Toute la journée <span class="h2r" id="day-sum"></span></h2>
+    <div id="day"></div>
+  </section>
+
+  <section class="card">
+    <h2>Timeline des passages</h2>
+    <div id="err" class="err"></div>
+    <ol class="timeline" id="timeline"></ol>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Réglages</summary>
+      <div class="settings">
+        <label class="check"><input type="checkbox" id="o-dep"> Inclure les départs</label>
+        <label class="check"><input type="checkbox" id="o-notif"> Me prévenir avant un passage</label>
+        <label>Un train arrivant passe devant chez moi … min avant son arrivée
+          <input type="number" id="o-arrOff" min="0" max="15" step="1"></label>
+        <label>Un train partant passe devant chez moi … min après son départ
+          <input type="number" id="o-depOff" min="0" max="15" step="1"></label>
+        <label>Durée du bruit autour d'un passage (± min)
+          <input type="number" id="o-margin" min="0" max="5" step="0.5"></label>
+        <label>Accalmie minimale pour ouvrir (min)
+          <input type="number" id="o-calm" min="2" max="60" step="1"></label>
+        <label class="check"><input type="checkbox" id="o-only"> Ne tenir compte que de mes trains bruyants 🔊</label>
+      </div>
+      <div class="mine">
+        <h3>Mes trains bruyants <span id="nz-count"></span></h3>
+        <p class="hint">Touchez 🔊 sur un passage pour le marquer. Un même numéro de train repasse en général chaque jour à la même heure : il sera signalé les jours suivants.
+          Enregistré sur votre serveur : visible depuis tous vos appareils.</p>
+        <p class="hint" id="nz-local" hidden>⚠️ Serveur injoignable : marquages gardés dans ce navigateur seulement.</p>
+        <ul id="nz-list"></ul>
+      </div>
+    </details>
+  </section>
+
+  <div class="foot">
+    POC · Données : API SNCF (Navitia), temps réel, rafraîchies toutes les minutes.
+    Heure de passage = estimation à partir des horaires en gare, à calibrer selon votre immeuble.
+    <span id="gen"></span>
+  </div>
+</div>
+
+<script src="data.js"></script>
+<script>
+const DEFAULTS = { dep: true, notif: false, arrOff: 2, depOff: 2, margin: 1, calm: 8, only: false };
+const MIN = 60000;
+let S = { ...DEFAULTS };
+try { S = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('rails-settings') || '{}') }; } catch {}
+const save = () => { try { localStorage.setItem('rails-settings', JSON.stringify(S)); } catch {} };
+
+// Trains bruyants : { clé: { type, mode, line, number, direction, at } }
+// Source de vérité : journal nginx (/declarations.jsonl) ; copie locale si le serveur est injoignable.
+let NZ = {};
+try { NZ = JSON.parse(localStorage.getItem('rails-noisy') || '{}') || {}; } catch {}
+const saveNZ = () => { try { localStorage.setItem('rails-noisy', JSON.stringify(NZ)); } catch {} };
+const nzKey = (p) => [p.type, p.mode, p.line, p.number].join('|');
+
+let data = null;
+const FORCE_DEMO = new URLSearchParams(location.search).has('demo');
+const notified = new Set();
+const $ = (id) => document.getElementById(id);
+const hm = (d) => d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' });
+
+// ---- réglages ----
+const bind = (id, key, num) => {
+  const el = $(id);
+  if (el.type === 'checkbox') el.checked = S[key]; else el.value = S[key];
+  el.addEventListener('change', () => {
+    S[key] = el.type === 'checkbox' ? el.checked : (Number(el.value) || 0);
+    if (key === 'notif' && S.notif && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+    save(); render();
+  });
+};
+bind('o-dep', 'dep'); bind('o-notif', 'notif'); bind('o-arrOff', 'arrOff'); bind('o-depOff', 'depOff'); bind('o-margin', 'margin'); bind('o-calm', 'calm'); bind('o-only', 'only');
+
+// ---- marquage 🔊 ----
+async function toggleNZ(k, p) {
+  const on = !NZ[k];
+  if (on) NZ[k] = { type: p.type, mode: p.mode, line: p.line, number: p.number, direction: p.direction, at: hm(new Date(p.at)), marked: new Date().toISOString() };
+  else delete NZ[k];
+  saveNZ(); render();
+  const ok = await Declarations.send(k, on ? 1 : 0, NZ[k]);
+  $('nz-local').hidden = ok;
+}
+let rowsById = new Map();
+$('timeline').addEventListener('click', (e) => {
+  const b = e.target.closest('.nz'); if (!b) return;
+  const p = rowsById.get(b.dataset.id); if (p) toggleNZ(nzKey(p), p);
+});
+$('nz-list').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-k]'); if (!b) return;
+  const p = NZ[b.dataset.k]; if (p) toggleNZ(b.dataset.k, p);
+});
+
+// ---- données ----
+async function load() {
+  const [d, server] = await Promise.all([TrainData.load({ forceDemo: FORCE_DEMO }), Declarations.load()]);
+  data = d;
+  if (server) { NZ = server; saveNZ(); } // serveur joignable : il fait foi
+  $('nz-local').hidden = !!server;
+  $('err').textContent = data.error ? `⚠️ Mode démo — ${data.error}` : '';
+  render();
+}
+
+// Passages devant la rue = arrivée - décalage / départ + décalage
+function passages() {
+  if (!data) return [];
+  return data.items
+    .filter((x) => S.dep || x.type === 'arrival')
+    .map((x) => {
+      const t = new Date(x.time).getTime();
+      return { ...x, at: x.type === 'arrival' ? t - S.arrOff * MIN : t + S.depOff * MIN, nz: !!NZ[nzKey(x)] };
+    })
+    .sort((a, b) => a.at - b.at);
+}
+
+// Intervalles bruyants fusionnés : [début, fin]
+function noisy(list) {
+  const out = [];
+  for (const p of list) {
+    const a = p.at - S.margin * MIN, b = p.at + S.margin * MIN;
+    const last = out[out.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b); else out.push([a, b]);
+  }
+  return out;
+}
+
+// Plus long créneau calme qui commence dans [now, now + horizon]
+function bestGap(blocks, now, horizon) {
+  let cur = now, best = null;
+  for (const [a, b] of blocks) {
+    if (b <= now) continue;
+    if (cur >= now + horizon) break;
+    if (a > cur && (!best || a - cur > best[1] - best[0])) best = [cur, a];
+    cur = Math.max(cur, b);
+  }
+  // boucle terminée sans dépasser l'horizon : plus aucun passage après `cur`
+  const lastEnd = blocks.length ? blocks[blocks.length - 1][1] : now;
+  if (cur < now + horizon && cur >= lastEnd) best = [cur, Infinity];
+  return best;
+}
+
+function nextCalm(blocks, now) {
+  let cursor = now;
+  for (const [a, b] of blocks) {
+    if (b <= now) continue;
+    if (a > cursor && a - cursor >= S.calm * MIN) return [cursor, a];
+    cursor = Math.max(cursor, b);
+  }
+  return [cursor, Infinity];
+}
+
+// Bande [t0, t1] : créneaux calmes, passages, marqueur "maintenant". Retourne aussi stats.
+function strip(t0, t1, list, blocks, now) {
+  const pct = (t) => ((t - t0) / (t1 - t0)) * 100;
+  let html = '', cur = t0, maxCalm = 0, n = 0;
+  const calm = (a, b) => { maxCalm = Math.max(maxCalm, b - a); html += `<div class="calm" style="left:${pct(a)}%;width:${pct(b) - pct(a)}%"></div>`; };
+  for (const [a, b] of blocks) {
+    if (b < t0) continue; if (a > t1) break;
+    if (a > cur) calm(cur, a);
+    cur = Math.max(cur, b);
+  }
+  if (cur < t1) calm(cur, t1);
+  for (const p of list) if (p.at >= t0 && p.at < t1) {
+    n++;
+    html += `<div class="tick ${p.type === 'departure' ? 'dep' : ''} ${p.nz ? 'nzt' : ''}" style="left:${pct(p.at)}%" title="${p.nz ? '🔊 ' : ''}${p.mode} ${p.line} ${p.number} · ${hm(new Date(p.at))}"></div>`;
+  }
+  if (now >= t0 && now < t1) html += `<div class="nowmk" style="left:${pct(now)}%"></div>`;
+  return { html, maxCalm, n };
+}
+
+let dayKey = '';
+function renderDay(list, blocks, now) {
+  const key = Math.floor(now / MIN) + data.generatedAt + JSON.stringify(S) + JSON.stringify(NZ);
+  if (key === dayKey) return; // vue 24 h : redessinée au plus une fois par minute
+  dayKey = key;
+  const start = new Date(data.dayStart).getTime(), end = new Date(data.dayEnd).getTime();
+  let rows = '', total = 0, best = [0, 0];
+  for (let h = start; h < end; h += 60 * MIN) { // pas d'1 h réelle : gère les jours de changement d'heure
+    const st = strip(h, h + 60 * MIN, list, blocks, now);
+    total += st.n;
+    const cls = h + 60 * MIN <= now ? 'past' : h <= now ? 'cur' : '';
+    const calmMin = Math.round(st.maxCalm / MIN);
+    const stats = st.n === 0 ? 'aucun train' : `${st.n}<span class="long"> train${st.n > 1 ? 's' : ''}</span> · ${calmMin}′<span class="long"> calme max</span>`;
+    rows += `<div class="hrow ${cls}"><span class="hl">${hm(new Date(h)).slice(0, 2)}h</span><div class="strip sm">${st.html}</div><span class="hs">${stats}</span></div>`;
+  }
+  // plus longue accalmie à venir aujourd'hui, en journée (7h-23h)
+  const d7 = start + 7 * 60 * MIN, d23 = start + 23 * 60 * MIN;
+  let cur = Math.max(now, d7);
+  for (const [a, b] of blocks) {
+    if (b <= cur) continue; if (a >= d23) break;
+    if (a - cur > best[1] - best[0]) best = [cur, a];
+    cur = Math.max(cur, b);
+  }
+  if (cur < d23 && d23 - cur > best[1] - best[0]) best = [cur, d23];
+  $('day').innerHTML = rows;
+  $('day-sum').textContent = `${total} passages` + (best[1] > best[0] ? ` · plus longue accalmie à venir : ${hm(new Date(best[0]))} → ${hm(new Date(best[1]))} (${Math.round((best[1] - best[0]) / MIN)} min)` : '');
+}
+
+function render() {
+  const now = Date.now();
+  $('clock').textContent = new Date(now).toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' });
+  if (!data) return;
+
+  $('src').textContent = data.source === 'live' ? 'LIVE' : 'DÉMO';
+  $('src').className = 'badge-src ' + data.source;
+  $('gen').textContent = '· Maj ' + hm(new Date(data.generatedAt));
+  $('lg-dep').style.display = S.dep ? '' : 'none';
+
+  const all = passages();
+  const list = S.only ? all.filter((p) => p.nz) : all; // trains pris en compte pour le statut et les bandes
+  const blocks = noisy(list);
+  const upcoming = list.filter((p) => p.at >= now - S.margin * MIN);
+  const current = blocks.find(([a, b]) => a <= now && now <= b);
+  const next = upcoming.find((p) => p.at >= now);
+  const [calmA, calmB] = nextCalm(blocks, now);
+
+  // ---- statut ----
+  let cls, icon, title, detail;
+  const span = (a, b) => b === Infinity
+    ? `à partir de <b>${hm(new Date(a))}</b> (plus aucun train ${S.only ? '🔊 ' : ''}prévu)`
+    : `<b>${hm(new Date(a))} → ${hm(new Date(b))}</b> (${Math.floor((b - a) / MIN)} min)`;
+  let calmTxt;
+  if (calmA - now <= 60 * MIN) calmTxt = `Prochaine accalmie ${span(calmA, calmB)}`;
+  else {
+    // Pas d'accalmie suffisante dans l'heure : montrer le meilleur créneau disponible
+    const g = bestGap(blocks, now, 60 * MIN);
+    calmTxt = g && g[1] - g[0] >= MIN ? `Meilleur créneau dans l'heure : ${span(g[0], g[1])}` : 'Aucun créneau calme dans l\'heure';
+  }
+  if (current) {
+    cls = 's-red'; icon = '🔇'; title = 'Train en passage — gardez fermé';
+    detail = calmTxt;
+  } else {
+    const freeMin = next ? (next.at - S.margin * MIN - now) / MIN : Infinity;
+    if (freeMin >= S.calm) {
+      cls = 's-green'; icon = '🪟'; title = freeMin === Infinity ? 'Aucun train prévu — vous pouvez ouvrir' : `Calme ~${Math.floor(freeMin)} min — vous pouvez ouvrir`;
+      detail = next ? `Prochain passage à <b>${hm(new Date(next.at))}</b> · ${next.mode} ${next.line}` : '';
+    } else {
+      cls = freeMin <= 2 ? 's-red' : 's-orange'; icon = freeMin <= 2 ? '🚨' : '⚠️';
+      title = `Train dans ${Math.max(0, Math.ceil(freeMin + S.margin))} min — fermez bientôt`;
+      detail = calmTxt;
+    }
+  }
+  if (S.only && !all.some((p) => p.nz)) detail = 'Aucun train marqué 🔊 : décochez « Ne tenir compte que de mes trains bruyants » ou marquez-en dans la timeline.';
+  else if (S.only) detail += ' · <i>seuls vos trains 🔊 sont comptés</i>';
+  $('status').className = 'status ' + cls;
+  $('st-icon').textContent = icon; $('st-title').textContent = title; $('st-detail').innerHTML = detail;
+
+  // ---- notifications ----
+  if (S.notif && 'Notification' in window && Notification.permission === 'granted' && next) {
+    const lead = (next.at - now) / MIN;
+    if (lead <= 2 && !notified.has(next.id)) {
+      notified.add(next.id);
+      new Notification('🚆 Train dans ~2 min', { body: `${next.mode} ${next.line} ${next.number} — ${hm(new Date(next.at))}`, tag: next.id });
+    }
+  }
+
+  // ---- bande 60 min ----
+  $('strip').innerHTML = strip(now, now + 60 * MIN, list, blocks, -1).html;
+  $('scale').innerHTML = [0, 15, 30, 45, 60].map((m) => `<span>${m === 0 ? 'maint.' : hm(new Date(now + m * MIN))}</span>`).join('');
+
+  // ---- journée ----
+  renderDay(list, blocks, now);
+
+  // ---- timeline (redessinée chaque minute ou si données/réglages changent, pour ne pas perdre les clics) ----
+  const tlKey = Math.floor(now / MIN) + data.generatedAt + JSON.stringify(S) + JSON.stringify(NZ);
+  if (tlKey === renderTimeline.key) return;
+  renderTimeline.key = tlKey;
+  renderTimeline(all, now);
+}
+
+function renderTimeline(list, now) {
+  const recent = list.filter((p) => p.at < now && p.at >= now - 10 * MIN);
+  const future = list.filter((p) => p.at >= now).slice(0, 40);
+  // texte noir ou blanc selon la luminance de la couleur de ligne
+  const ink = (hex) => {
+    const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16 & 255, n >> 8 & 255, n & 255];
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 160 ? '#1c1d1f' : '#fff';
+  };
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const row = (p, past) => {
+    const mins = Math.round((p.at - now) / MIN);
+    const cd = past ? (mins >= 0 ? "à l'instant" : `il y a ${-mins} min`) : mins <= 0 ? 'maintenant' : mins < 60 ? `dans ${mins} min` : `dans ${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')}`;
+    const station = new Date(p.time), base = new Date(p.baseTime);
+    rowsById.set(p.id, p);
+    return `<li class="row ${past ? 'past' : ''} ${p.nz ? 'noisy' : ''}">
+      <div class="t">${hm(new Date(p.at))}${p.delayMin > 0 ? `<s>${hm(new Date(base.getTime() + (p.at - station.getTime())))}</s>` : ''}</div>
+      <div class="what">
+        <div class="l1">
+          <span class="pill" style="background:${esc(p.color || '#555')};color:${ink(p.color || '#555')}">${esc(p.mode)}${p.line ? ' ' + esc(p.line) : ''}</span>
+          <span>${esc(p.number)}</span>
+          <span class="kind">${p.type === 'arrival' ? '↘ arrivée' : '↗ départ'} ${hm(station)}</span>
+          ${p.delayMin > 0 ? `<span class="delay">+${p.delayMin} min</span>` : ''}
+          ${p.nz ? '<span class="tagnz">🔊 bruyant</span>' : ''}
+        </div>
+        <div class="l2">${esc(p.direction)}</div>
+      </div>
+      <div class="cd ${!past && mins <= 3 ? 'soon' : ''}">${cd}</div>
+      <div class="nzc"><button class="nz" data-id="${esc(p.id)}" aria-pressed="${p.nz}" title="${p.nz ? 'Ne plus marquer comme bruyant' : 'Marquer ce train comme bruyant'}">🔊</button></div>
+    </li>`;
+  };
+  rowsById = new Map();
+  const html =
+    recent.map((p) => row(p, true)).join('') +
+    `<li class="nowline"><span>${hm(new Date(now))}</span></li>` +
+    (future.length ? future.map((p) => row(p, false)).join('') : '<li class="row"><div></div><div class="what">' + 'Aucun train prévu dans les 3 prochaines heures.' + '</div></li>');
+  $('timeline').innerHTML = html;
+
+  // ---- liste « mes trains bruyants » ----
+  const mine = Object.entries(NZ).sort((a, b) => a[1].at.localeCompare(b[1].at));
+  $('nz-count').textContent = mine.length ? `(${mine.length})` : '';
+  $('nz-list').innerHTML = mine.length ? mine.map(([k, v]) =>
+    `<li><span><b>${esc(v.at)}</b> · ${esc(v.mode)}${v.line ? ' ' + esc(v.line) : ''} ${esc(v.number)} · ${v.type === 'arrival' ? 'arrivée' : 'départ'} · <span style="color:var(--muted)">${esc(v.direction)}</span></span>
+     <button class="btn x" data-k="${esc(k)}" title="Retirer">✕</button></li>`).join('') : '<li class="hint">Aucun pour l\'instant.</li>';
+}
+
+load();
+setInterval(load, 60000);
+setInterval(render, 1000);
+</script>
+</body>
+</html>
