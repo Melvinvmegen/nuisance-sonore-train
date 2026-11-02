@@ -18,7 +18,7 @@ Sources de données, dans l'ordre :
 | Badge | Source | Quand |
 |---|---|---|
 | **LIVE** | API SNCF (clé requise) : tous les trains en temps réel | clé installée et API joignable |
-| **OPEN DATA** | Données ouvertes SNCF, sans clé : horaires prévus + retards temps réel (surtout TGV/Intercités, une partie des RER D / R) ; les trains sans temps réel sont marqués « prévu » | API SNCF en erreur |
+| **OPEN DATA** | Données ouvertes SNCF et Trenitalia (Frecciarossa), sans clé : horaires prévus + retards temps réel (surtout TGV/Intercités/Frecciarossa, une partie des RER D / R) ; les trains sans temps réel sont marqués « prévu » | API SNCF en erreur |
 | **DÉMO** | Données simulées | ni l'un ni l'autre |
 
 Forcer la démo : `http://localhost:8080/?demo`.
@@ -43,8 +43,8 @@ navigateur ──► nginx ──┬─ /                    fichiers statiques 
 
 - `public/index.html` : interface.
 - `public/data.js` : appels API SNCF, secours open data, démo, trains bruyants.
-- `opendata/main.go` : télécharge les horaires théoriques SNCF et Transilien (GTFS, 1×/6 h) et le temps réel
-  (GTFS-RT, transport.data.gouv.fr), garde Gare de Lyon et écrit `data/opendata.json`. Cache dans `data/cache/`.
+- `opendata/main.go` : télécharge les horaires théoriques SNCF, Transilien et Trenitalia France (GTFS, 1×/6 h) et le temps réel
+  (GTFS-RT SNCF et Trenitalia, transport.data.gouv.fr), garde Gare de Lyon et écrit `data/opendata.json`. Cache dans `data/cache/`.
 - `deploy/nginx/rails-semprun.conf` : configuration nginx (bloc `http`).
 - `deploy/nginx/rails-sncf-proxy.inc` : réglages du relais SNCF.
 
@@ -126,6 +126,8 @@ tag git → `:<tag>` + `:latest`. Secrets du dépôt : `DOCKER_USERNAME`, `DOCKE
 
 - Mode open data : la plupart des RER D / Transilien n'ont pas de temps réel (horaire prévu, ni retard ni suppression),
   et un train marqué 🔊 en open data peut ne pas être reconnu avec l'API SNCF (libellés de lignes différents).
+- Frecciarossa (open data Trenitalia) : heures du GTFS en UTC (vérifié avec le temps réel), converties en heure de Paris ;
+  numéro de train = `route_id` (6xxx Lyon/Marseille, 92xx Milan).
 
 - L'heure de passage devant la rue est **estimée** depuis l'heure en gare (distance à vol d'oiseau ÷ vitesse, ou 2 min par défaut). À calibrer.
 - La gare de référence reste Paris Gare de Lyon, quelle que soit la position.

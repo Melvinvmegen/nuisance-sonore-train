@@ -1,10 +1,11 @@
-// Solution de secours sans clé API : passages à Paris Gare de Lyon depuis l'open data SNCF.
+// Solution de secours sans clé API : passages à Paris Gare de Lyon depuis l'open data SNCF et Trenitalia.
 //
 //   - Horaires théoriques (GTFS, mis à jour chaque jour) :
-//     SNCF Voyageurs (TGV INOUI, OUIGO, Intercités, TER, Lyria) et Transilien (RER D, ligne R…,
-//     les TER de ce fichier sont ignorés : déjà dans le flux SNCF).
+//     SNCF Voyageurs (TGV INOUI, OUIGO, Intercités, TER, Lyria), Transilien (RER D, ligne R…,
+//     les TER de ce fichier sont ignorés : déjà dans le flux SNCF) et Trenitalia France (Frecciarossa).
 //   - Temps réel (GTFS-RT trip updates, ~toutes les 2 min) : retards et suppressions.
 //     D'après la SNCF, seuls TGV et Intercités sont garantis ; les autres trains restent souvent à l'heure prévue.
+//     Trenitalia publie son propre flux (identifiants de trajet identiques à son GTFS).
 //
 // Écrit un JSON au même format que les trains renvoyés par public/data.js (fetchKind), pour la journée
 // en cours (00h → 03h le lendemain, heure de Paris). Bibliothèque standard Go uniquement, binaire statique.
@@ -38,18 +39,24 @@ import (
 const (
 	userAgent      = "rails-semprun/1.0 (+https://github.com/Melvinvmegen/nuisance-sonore-train)"
 	staticMaxAge   = 6 * time.Hour // re-télécharge les GTFS au plus toutes les 6 h (publiés 1×/jour)
-	rtURL          = "https://proxy.transport.data.gouv.fr/resource/sncf-gtfs-rt-trip-updates"
-	sncfGDL        = "87686006"   // code UIC de Paris Gare de Lyon (grandes lignes)
-	transilienGDL  = "IDFM:73626" // zone d'arrêt Gare de Lyon dans le GTFS Transilien
-	cosLat         = 0.658        // cos(48,84°) : degrés de longitude → distance
-	streetDirNorth = -0.40        // vecteur (nord, est) unitaire : gare → voies qui longent la rue (sud-est)
+	sncfGDL        = "87686006"    // code UIC de Paris Gare de Lyon (grandes lignes)
+	transilienGDL  = "IDFM:73626"  // zone d'arrêt Gare de Lyon dans le GTFS Transilien
+	trenitaliaGDL  = "10007"       // Paris-Gare-de-Lyon dans le GTFS Trenitalia France
+	cosLat         = 0.658         // cos(48,84°) : degrés de longitude → distance
+	streetDirNorth = -0.40         // vecteur (nord, est) unitaire : gare → voies qui longent la rue (sud-est)
 	streetDirEast  = 0.92
 )
 
 var (
-	feeds = []struct{ name, url string }{
-		{"sncf", "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip"},
-		{"transilien", "https://eu.ftp.opendatasoft.com/sncf/gtfs/transilien-gtfs.zip"},
+	// rt : flux temps réel dont les trajets du GTFS relèvent (voir rtURLs)
+	feeds = []struct{ name, url, rt string }{
+		{"sncf", "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip", "sncf"},
+		{"transilien", "https://eu.ftp.opendatasoft.com/sncf/gtfs/transilien-gtfs.zip", "sncf"},
+		{"trenitalia", "https://www.data.gouv.fr/api/1/datasets/r/bdecea2c-ebc9-4f22-812d-927e4a2e4bad", "trenitalia"},
+	}
+	rtURLs = []struct{ name, url string }{
+		{"sncf", "https://proxy.transport.data.gouv.fr/resource/sncf-gtfs-rt-trip-updates"},
+		{"trenitalia", "https://proxy.transport.data.gouv.fr/resource/trenitalia-gtfs-rt"},
 	}
 	sncfModes          = map[string]string{"TGV INOUI": "TGV INOUI", "OUIGO": "OUIGO", "INTERCITES": "Intercités", "Train TER": "TER", "Lyria": "TGV Lyria"}
 	transilienAgencies = map[string]bool{"RER": true, "Transilien": true}
@@ -100,6 +107,9 @@ type trip struct {
 	Origin, Terminus   string
 	Stops              []stop
 	service            string
+	rt                 string         // flux temps réel à consulter
+	loc                *time.Location // fuseau des heures GTFS (Trenitalia : UTC, d'après son temps réel)
+	seqIdx             map[int]int    // Trenitalia : stop_sequence d'origine → Seq renumérotée (voir buildIndex)
 }
 
 // rows lit un CSV du zip ligne à ligne ; get(col) renvoie "" pour une colonne absente.
@@ -198,7 +208,7 @@ func passageKinds(stops []stop, i int, coords map[string][2]float64) []string {
 }
 
 // buildIndex : trajets passant à Gare de Lyon, avec leurs dates de circulation parmi days.
-func buildIndex(feed, path string, days []time.Time) ([]*trip, error) {
+func buildIndex(feed, rtFeed, path string, days []time.Time) ([]*trip, error) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
 		return nil, err
@@ -215,7 +225,8 @@ func buildIndex(feed, path string, days []time.Time) ([]*trip, error) {
 		if e1 == nil && e2 == nil {
 			coords[id] = [2]float64{lat, lon}
 		}
-		if (feed == "sncf" && strings.HasSuffix(id, "-"+sncfGDL)) || (feed == "transilien" && get("parent_station") == transilienGDL) {
+		if (feed == "sncf" && strings.HasSuffix(id, "-"+sncfGDL)) || (feed == "transilien" && get("parent_station") == transilienGDL) ||
+			(feed == "trenitalia" && id == trenitaliaGDL) {
 			gdl[id] = true
 		}
 		return nil
@@ -231,10 +242,10 @@ func buildIndex(feed, path string, days []time.Time) ([]*trip, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("agency.txt : %w", err)
 	}
-	type route struct{ agency, short, color string }
+	type route struct{ id, agency, short, color string }
 	routes := map[string]route{}
 	if err := rows(z, "routes.txt", func(get func(string) string) error {
-		routes[get("route_id")] = route{get("agency_id"), get("route_short_name"), get("route_color")}
+		routes[get("route_id")] = route{get("route_id"), get("agency_id"), get("route_short_name"), get("route_color")}
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("routes.txt : %w", err)
@@ -258,8 +269,16 @@ func buildIndex(feed, path string, days []time.Time) ([]*trip, error) {
 			return nil
 		}
 		r := routes[get("route_id")]
-		t := &trip{ID: id, service: get("service_id")}
-		if feed == "transilien" {
+		t := &trip{ID: id, service: get("service_id"), rt: rtFeed, loc: paris}
+		switch feed {
+		case "trenitalia":
+			// Ni numéro ni destination dans trips.txt : route_id porte le numéro commercial (6653, 9287…),
+			// une seule route par horaire, un seul trajet par (route, date) → identifiant stable d'un jour à l'autre.
+			t.Mode, t.Number, t.loc = "Frecciarossa", r.id, time.UTC
+			if r.color == "" {
+				r.color = "c00000" // comme public/data.js
+			}
+		case "transilien":
 			agency := agencies[r.agency]
 			if !transilienAgencies[agency] {
 				return nil
@@ -271,7 +290,7 @@ func buildIndex(feed, path string, days []time.Time) ([]*trip, error) {
 			if excludeLines[strings.TrimSpace(t.Mode+" "+t.Line)] {
 				return nil
 			}
-		} else {
+		default:
 			t.Number = get("trip_headsign") // mode déduit de l'arrêt (ci-dessous)
 		}
 		if r.color != "" {
@@ -348,7 +367,18 @@ func buildIndex(feed, path string, days []time.Time) ([]*trip, error) {
 			continue
 		}
 		sort.Strings(t.Dates)
-		sort.Slice(t.Stops, func(i, j int) bool { return t.Stops[i].Seq < t.Stops[j].Seq })
+		if feed == "trenitalia" {
+			// stop_sequence parfois incohérent (ex. 9281 : Oulx 5, Torino 24, Milano 38, Paris 39…) : ordre par heure,
+			// séquences renumérotées ; le temps réel (par stop_sequence d'origine) passe par seqIdx.
+			sort.SliceStable(t.Stops, func(i, j int) bool { return t.Stops[i].Arr < t.Stops[j].Arr })
+			t.seqIdx = map[int]int{}
+			for i := range t.Stops {
+				t.seqIdx[t.Stops[i].Seq] = i
+				t.Stops[i].Seq = i
+			}
+		} else {
+			sort.Slice(t.Stops, func(i, j int) bool { return t.Stops[i].Seq < t.Stops[j].Seq })
+		}
 		t.GDL = -1
 		for i, s := range t.Stops {
 			if gdl[s.ID] {
@@ -419,7 +449,7 @@ func (s *static) load(cacheDir string, days []time.Time) ([]*trip, error) {
 		if _, statErr := os.Stat(path); statErr != nil || (!changed && s.feeds[f.name] != nil && s.day == day) {
 			continue
 		}
-		t, err := buildIndex(f.name, path, days)
+		t, err := buildIndex(f.name, f.rt, path, days)
 		if err != nil {
 			logf("GTFS %s illisible : %v", f.name, err)
 			continue
@@ -595,10 +625,11 @@ func parseTripUpdates(data []byte) (map[string]*tripUpdate, int64, error) {
 	return out, stamp, err
 }
 
-// serviceBase : origine des heures GTFS = midi - 12 h, heure de Paris (correct les jours de changement d'heure).
-func serviceBase(date string) int64 {
-	d, _ := time.ParseInLocation("20060102", date, paris)
-	return time.Date(d.Year(), d.Month(), d.Day(), 12, 0, 0, 0, paris).Unix() - 12*3600
+// serviceBase : origine des heures GTFS = midi - 12 h dans le fuseau du flux (correct les jours de changement d'heure).
+// Les heures sont ensuite écrites en ISO UTC ; le navigateur les affiche en heure de Paris.
+func serviceBase(date string, loc *time.Location) int64 {
+	d, _ := time.ParseInLocation("20060102", date, loc)
+	return time.Date(d.Year(), d.Month(), d.Day(), 12, 0, 0, 0, loc).Unix() - 12*3600
 }
 
 // delayAt : retard (s) au passage à Gare de Lyon. ok=false : pas de temps réel ; skip : arrêt supprimé.
@@ -610,6 +641,9 @@ func delayAt(t *trip, tu *tripUpdate, base int64, kind string, byNumber bool) (d
 	for i := range tu.stops {
 		st := &tu.stops[i]
 		seq, has := st.seq, st.hasSeq
+		if has && t.seqIdx != nil {
+			seq, has = t.seqIdx[seq]
+		}
 		if byNumber {
 			if !strings.HasSuffix(st.stop, sncfGDL) { // StopArea:OCE87686006 ou StopPoint:OCE…-87686006
 				continue
@@ -736,33 +770,42 @@ func build(st *static, cacheDir string) (*payload, error) {
 	}
 
 	p := &payload{Day: today.Format("20060102"), Items: []item{}}
-	rt := map[string]*tripUpdate{}
-	if data, err := httpGet(rtURL, time.Minute); err != nil {
-		msg := err.Error()
-		p.RealtimeError = &msg
-		logf("temps réel indisponible : %v", err)
-	} else if parsed, stamp, err := parseTripUpdates(data); err != nil {
-		msg := err.Error()
-		p.RealtimeError = &msg
-		logf("temps réel illisible : %v", err)
-	} else {
-		rt = parsed
-		if stamp > 0 {
+	rt := map[string]map[string]*tripUpdate{}
+	var rtErrs []string
+	for _, src := range rtURLs {
+		rt[src.name] = map[string]*tripUpdate{}
+		data, err := httpGet(src.url, time.Minute)
+		var parsed map[string]*tripUpdate
+		var stamp int64
+		if err == nil {
+			parsed, stamp, err = parseTripUpdates(data)
+		}
+		if err != nil {
+			rtErrs = append(rtErrs, src.name+" : "+err.Error())
+			logf("temps réel %s indisponible : %v", src.name, err)
+			continue
+		}
+		rt[src.name] = parsed
+		if src.name == "sncf" && stamp > 0 { // horodatage affiché : celui du flux principal
 			s := iso(stamp)
 			p.RealtimeAt = &s
 		}
 	}
-	byNum := indexByNumber(rt)
+	if len(rtErrs) > 0 {
+		msg := strings.Join(rtErrs, " ; ")
+		p.RealtimeError = &msg
+	}
+	byNum := map[string]map[numberDate]*tripUpdate{"sncf": indexByNumber(rt["sncf"])} // numéros courts : flux SNCF seulement
 
 	for _, t := range trips {
 		g := t.Stops[t.GDL]
 		through := t.GDL > 0 && t.GDL < len(t.Stops)-1
 		for _, date := range t.Dates {
-			tu, byNumber := matchRT(rt, byNum, t, date)
+			tu, byNumber := matchRT(rt[t.rt], byNum[t.rt], t, date)
 			if tu != nil && tu.canceled {
 				continue
 			}
-			base := serviceBase(date)
+			base := serviceBase(date, t.loc)
 			for _, kind := range t.Kinds {
 				secs := g.Dep
 				if kind == "arrival" {
