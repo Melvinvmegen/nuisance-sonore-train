@@ -1,0 +1,5 @@
+# Seuls public/ et deploy/nginx/*.conf|*.inc entrent dans l'image
+*
+!public/
+!deploy/nginx/rails-semprun.conf
+!deploy/nginx/rails-sncf-proxy.inc

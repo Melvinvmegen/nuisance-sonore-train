@@ -70,6 +70,27 @@ sudo nginx -t && sudo systemctl reload nginx
 
 Puis ajouter `server_name` et HTTPS (certbot) dans `rails-semprun.conf`.
 
+## Image Docker
+
+```bash
+DOCKER_USERNAME=… DOCKER_PASSWORD=… scripts/build.sh   # tag git du commit courant, sinon latest
+```
+
+Construit `melvinvmegen/nuisance-sonore-train` (modifiable via `IMAGE_NAME`), vérifie la config (`nginx -t`) puis pousse l'image ;
+une version taguée pousse aussi `latest`. La clé SNCF n'est jamais dans l'image (`.dockerignore`), elle est montée au lancement :
+
+```bash
+docker run -d -p 80:80 \
+  -v /etc/rails/sncf_auth.inc:/etc/nginx/conf.d/secrets/sncf_auth.inc:ro \
+  -v rails-data:/var/www/rails/data \
+  melvinvmegen/nuisance-sonore-train
+```
+
+Le volume `rails-data` conserve `declarations.jsonl` d'une version à l'autre.
+
+**CI** (`.github/workflows/docker.yml`) : PR → build + `nginx -t` sans push (`NO_PUSH=1`) ; push sur `main` → `:latest` ;
+tag git → `:<tag>` + `:latest`. Secrets du dépôt : `DOCKER_USERNAME`, `DOCKER_PASSWORD` (jeton d'accès Docker Hub).
+
 ## Fonctionnalités
 
 - **Statut** : 🪟 calme, vous pouvez ouvrir / ⚠️ fermez bientôt / 🔇 train en passage, et prochaine accalmie.
@@ -78,10 +99,15 @@ Puis ajouter `server_name` et HTTPS (certbot) dans `rails-semprun.conf`.
 - **Trains bruyants 🔊** : marquage par passage, liste dans les réglages, option « ne compter que mes trains bruyants ».
 - **Réglages** (dans le navigateur) : départs inclus (par défaut), décalage gare ↔ rue, durée du bruit,
   accalmie minimale, notification 2 min avant un passage.
+- **Ma position** : adresse saisie (géocodée par la Géoplateforme IGN, `data.geopf.fr`, gratuit, sans clé)
+  ou 📍 géolocalisation du navigateur (HTTPS requis, sauf `localhost`). Le décalage gare ↔ logement est alors
+  calculé : distance à vol d'oiseau jusqu'aux quais de Gare de Lyon ÷ vitesse des trains (30 km/h par défaut, réglable),
+  arrondi à 0,5 min. Au-delà de 8 km, retour au réglage manuel. Décochable pour régler à la main.
 
 ## Limites du POC
 
-- L'heure de passage devant la rue est **estimée** depuis l'heure en gare (2 min avant une arrivée, 2 min après un départ). À calibrer.
+- L'heure de passage devant la rue est **estimée** depuis l'heure en gare (distance à vol d'oiseau ÷ vitesse, ou 2 min par défaut). À calibrer.
+- La gare de référence reste Paris Gare de Lyon, quelle que soit la position.
 - Les manœuvres et rames vides (voies de garage à ~30 m de la rue) ne sont pas dans l'API voyageurs.
 - Les numéros de RER D / Transilien peuvent changer selon les jours : un signalement peut ne pas suivre.
 - L'instance n'est pas protégée : quiconque connaît l'URL peut modifier les marquages. Ajouter un `auth_basic` nginx si elle est exposée sur Internet.

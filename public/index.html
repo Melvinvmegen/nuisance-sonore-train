@@ -101,7 +101,13 @@
   .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 12px; }
   .settings label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
   .settings label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
-  .settings input[type=number] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); width: 100%; }
+  .home { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .home .addr { display: flex; gap: 6px; flex-wrap: wrap; }
+  .home .addr input { flex: 1 1 220px; min-width: 0; }
+  .home .hint { font-size: 12px; color: var(--muted); margin: 0; }
+  .home .hint.bad { color: var(--red); }
+  .settings input[readonly] { opacity: .6; }
+  .home input[type=text], .settings input[type=number] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); width: 100%; }
   .foot { color: var(--muted); font-size: 12px; margin-top: 20px; }
   .err { color: var(--red); font-size: 13px; }
   @media (max-width: 480px) { .clock { font-size: 22px; } .status .title { font-size: 18px; } .status .icon { font-size: 34px; } }
@@ -112,7 +118,7 @@
   <header>
     <div>
       <h1>🚆 Trains Gare de Lyon <span id="src" class="badge-src"></span></h1>
-      <div class="sub">Rue Jorge Semprún · passages estimés le long des voies</div>
+      <div class="sub"><span id="sub-home">Rue Jorge Semprún</span> · passages estimés le long des voies</div>
     </div>
     <div class="clock" id="clock">--:--:--</div>
   </header>
@@ -149,13 +155,24 @@
   <section class="card">
     <details>
       <summary>Réglages</summary>
+      <div class="home">
+        <div class="addr">
+          <input type="text" id="o-addr" placeholder="Mon adresse, ex. 10 rue Jorge Semprun, Paris" autocomplete="street-address" aria-label="Mon adresse">
+          <button class="btn" type="button" id="o-find">Chercher</button>
+          <button class="btn" type="button" id="o-geo">📍 Me localiser</button>
+        </div>
+        <p class="hint" id="home-info"></p>
+      </div>
       <div class="settings">
         <label class="check"><input type="checkbox" id="o-dep"> Inclure les départs</label>
         <label class="check"><input type="checkbox" id="o-notif"> Me prévenir avant un passage</label>
+        <label class="check"><input type="checkbox" id="o-auto"> Calculer les décalages depuis ma position</label>
+        <label>Vitesse des trains entre la gare et chez moi (km/h)
+          <input type="number" id="o-speed" min="10" max="120" step="5"></label>
         <label>Un train arrivant passe devant chez moi … min avant son arrivée
-          <input type="number" id="o-arrOff" min="0" max="15" step="1"></label>
+          <input type="number" id="o-arrOff" min="0" max="15" step="0.5"></label>
         <label>Un train partant passe devant chez moi … min après son départ
-          <input type="number" id="o-depOff" min="0" max="15" step="1"></label>
+          <input type="number" id="o-depOff" min="0" max="15" step="0.5"></label>
         <label>Durée du bruit autour d'un passage (± min)
           <input type="number" id="o-margin" min="0" max="5" step="0.5"></label>
         <label>Accalmie minimale pour ouvrir (min)
@@ -181,7 +198,8 @@
 
 <script src="data.js"></script>
 <script>
-const DEFAULTS = { dep: true, notif: false, arrOff: 2, depOff: 2, margin: 1, calm: 8, only: false };
+// home : { lat, lon, label } ou null. auto : décalages calculés depuis home et speed.
+const DEFAULTS = { dep: true, notif: false, arrOff: 2, depOff: 2, margin: 1, calm: 8, only: false, home: null, auto: true, speed: 30 };
 const MIN = 60000;
 let S = { ...DEFAULTS };
 try { S = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('rails-settings') || '{}') }; } catch {}
@@ -207,10 +225,80 @@ const bind = (id, key, num) => {
   el.addEventListener('change', () => {
     S[key] = el.type === 'checkbox' ? el.checked : (Number(el.value) || 0);
     if (key === 'notif' && S.notif && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
-    save(); render();
+    applyHome(); save(); render();
   });
 };
 bind('o-dep', 'dep'); bind('o-notif', 'notif'); bind('o-arrOff', 'arrOff'); bind('o-depOff', 'depOff'); bind('o-margin', 'margin'); bind('o-calm', 'calm'); bind('o-only', 'only');
+bind('o-auto', 'auto'); bind('o-speed', 'speed');
+
+// ---- ma position → décalages gare ↔ chez moi ----
+// Point de référence : extrémité des quais de Paris Gare de Lyon (l'heure API = heure à quai).
+const STATION = { lat: 48.8443, lon: 2.3739 };
+const MAX_KM = 8; // au-delà, l'estimation à vol d'oiseau n'a plus de sens
+function distKm(a, b) {
+  const rad = Math.PI / 180, dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
+function applyHome(msg) {
+  const d = S.home ? distKm(S.home, STATION) : null;
+  const auto = S.auto && d != null && d <= MAX_KM;
+  if (auto) S.arrOff = S.depOff = Math.min(15, Math.round((d / Math.max(S.speed, 1)) * 60 * 2) / 2); // pas de 0,5 min
+  for (const [id, key] of [['o-arrOff', 'arrOff'], ['o-depOff', 'depOff']]) { $(id).value = S[key]; $(id).readOnly = auto; }
+  $('o-speed').readOnly = !auto;
+  $('sub-home').textContent = S.home?.label || 'Rue Jorge Semprún';
+  const info = $('home-info');
+  info.classList.toggle('bad', !!msg || (d != null && d > MAX_KM));
+  info.textContent = msg
+    || (d == null ? 'Aucune position : renseignez votre adresse ou localisez-vous pour calculer les décalages. Sinon, réglez-les à la main.'
+      : `📍 ${S.home.label} · ${d < 1 ? Math.round(d * 1000) + ' m' : d.toFixed(1).replace('.', ',') + ' km'} des quais de Gare de Lyon`
+        + (d > MAX_KM ? ` — trop loin (> ${MAX_KM} km) : décalages à régler à la main.`
+          : auto ? ` → passage ~${String(S.arrOff).replace('.', ',')} min avant une arrivée / après un départ.` : '.'));
+}
+function setHome(lat, lon, label) {
+  S.home = { lat, lon, label: label || `${lat.toFixed(5)}, ${lon.toFixed(5)}` };
+  S.auto = true; $('o-auto').checked = true;
+  $('o-addr').value = S.home.label;
+  applyHome(); save(); render();
+}
+
+// Géocodage : Géoplateforme IGN (gratuit, sans clé). L'adresse saisie lui est envoyée.
+const GEO = 'https://data.geopf.fr/geocodage';
+const featLabel = (f) => f.properties.label || [f.properties.name, f.properties.postcode, f.properties.city].filter(Boolean).join(' ');
+async function findAddress() {
+  const q = $('o-addr').value.trim();
+  if (q.length < 3) return applyHome('Adresse trop courte.');
+  applyHome('Recherche…');
+  try {
+    const r = await fetch(`${GEO}/search?${new URLSearchParams({ q, limit: '1' })}`);
+    const f = r.ok ? (await r.json()).features?.[0] : null;
+    if (!f) return applyHome(r.ok ? 'Adresse introuvable.' : `Service d'adresses indisponible (HTTP ${r.status}).`);
+    const [lon, lat] = f.geometry.coordinates;
+    setHome(lat, lon, featLabel(f));
+  } catch { applyHome('Service d\'adresses injoignable.'); }
+}
+$('o-find').addEventListener('click', findAddress);
+$('o-addr').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); findAddress(); } });
+
+// Géolocalisation du navigateur (nécessite HTTPS, sauf localhost). La position reste dans le navigateur ;
+// seul le nom de rue est demandé à la Géoplateforme pour l'affichage.
+$('o-geo').addEventListener('click', () => {
+  if (!('geolocation' in navigator)) return applyHome('Localisation non disponible sur ce navigateur.');
+  if (!window.isSecureContext) return applyHome('La localisation exige une connexion HTTPS : renseignez plutôt votre adresse.');
+  applyHome('Localisation…');
+  navigator.geolocation.getCurrentPosition(async ({ coords: { latitude: lat, longitude: lon } }) => {
+    let label = null;
+    try {
+      const r = await fetch(`${GEO}/reverse?${new URLSearchParams({ lat: String(lat), lon: String(lon), limit: '1' })}`);
+      const f = r.ok ? (await r.json()).features?.[0] : null;
+      if (f) label = featLabel(f);
+    } catch {}
+    setHome(lat, lon, label);
+  }, (e) => applyHome(e.code === 1 ? 'Localisation refusée : renseignez votre adresse.' : 'Position introuvable : renseignez votre adresse.'),
+  { enableHighAccuracy: true, timeout: 15000, maximumAge: 600000 });
+});
+if (S.home) $('o-addr').value = S.home.label;
+applyHome();
 
 // ---- marquage 🔊 ----
 async function toggleNZ(k, p) {

@@ -1,0 +1,40 @@
+# Image Docker via scripts/build.sh
+# - pull request      → build + nginx -t, sans push
+# - push sur main     → push :latest
+# - tag (ex. v1.2.0)  → push :v1.2.0 et :latest
+# Secrets du dépôt requis : DOCKER_USERNAME, DOCKER_PASSWORD (jeton d'accès Docker Hub, pas le mot de passe)
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags nécessaires : build.sh lit la version avec git tag --points-at HEAD
+
+      - name: Build (sans push)
+        if: github.event_name == 'pull_request'
+        run: NO_PUSH=1 scripts/build.sh
+
+      - name: Build et push
+        if: github.event_name != 'pull_request'
+        run: scripts/build.sh
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
