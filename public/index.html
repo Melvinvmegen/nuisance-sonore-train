@@ -29,6 +29,7 @@
   .badge-src { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 99px; margin-left: 6px; vertical-align: middle; }
   .badge-src.live { background: var(--green-bg); color: var(--green); }
   .badge-src.demo { background: var(--orange-bg); color: var(--orange); }
+  .badge-src.opendata { background: var(--violet-bg); color: var(--accent); }
 
   .status { border-radius: 16px; padding: 20px; margin-bottom: 14px; display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; align-items: center; }
   .status .icon { font-size: 44px; grid-row: span 2; }
@@ -82,6 +83,9 @@
   .mine li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px dashed var(--line); }
   .mine li:first-child { border-top: 0; }
   .mine .hint { font-size: 12px; color: var(--muted); }
+  .lines { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; }
+  .lines label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .lines .n { color: var(--muted); font-variant-numeric: tabular-nums; }
   .btn { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; }
   .btn.x { padding: 0 8px; }
   .row .t { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 17px; }
@@ -180,6 +184,11 @@
         <label class="check"><input type="checkbox" id="o-only"> Ne tenir compte que de mes trains bruyants 🔊</label>
       </div>
       <div class="mine">
+        <h3>Lignes prises en compte</h3>
+        <p class="hint">Décochez une ligne que vous n'entendez pas : elle disparaît du statut, des bandes et de la timeline.</p>
+        <div class="lines" id="lines"></div>
+      </div>
+      <div class="mine">
         <h3>Mes trains bruyants <span id="nz-count"></span></h3>
         <p class="hint">Touchez 🔊 sur un passage pour le marquer. Un même numéro de train repasse en général chaque jour à la même heure : il sera signalé les jours suivants.
           Enregistré sur votre serveur : visible depuis tous vos appareils.</p>
@@ -199,7 +208,8 @@
 <script src="data.js"></script>
 <script>
 // home : { lat, lon, label } ou null. auto : décalages calculés depuis home et speed.
-const DEFAULTS = { dep: true, notif: false, arrOff: 2, depOff: 2, margin: 1, calm: 8, only: false, home: null, auto: true, speed: 30 };
+// off : lignes exclues du calcul, libellés "mode ligne" (ex. "RER D").
+const DEFAULTS = { dep: true, notif: false, arrOff: 2, depOff: 2, margin: 1, calm: 8, only: false, home: null, auto: true, speed: 30, off: [] };
 const MIN = 60000;
 let S = { ...DEFAULTS };
 try { S = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('rails-settings') || '{}') }; } catch {}
@@ -325,15 +335,38 @@ async function load() {
   data = d;
   if (server) { NZ = server; saveNZ(); } // serveur joignable : il fait foi
   $('nz-local').hidden = !!server;
-  $('err').textContent = data.error ? `⚠️ Mode démo — ${data.error}` : '';
+  $('err').textContent = data.source === 'demo' && data.error ? `⚠️ Mode démo (données simulées) — ${data.error}` : '';
+  renderLines();
   render();
 }
+
+// ---- lignes prises en compte ----
+const lineLabel = (x) => `${x.mode}${x.line ? ' ' + x.line : ''}`;
+function renderLines() {
+  const count = new Map();
+  for (const x of data.items) count.set(lineLabel(x), (count.get(lineLabel(x)) || 0) + 1);
+  for (const l of S.off) if (!count.has(l)) count.set(l, 0); // garder recochable une ligne absente aujourd'hui
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const key = JSON.stringify([...count.keys()].sort()) + JSON.stringify(S.off);
+  if (key === renderLines.key) { // mêmes lignes : ne mettre à jour que les compteurs (ne pas perdre le focus)
+    for (const el of $('lines').querySelectorAll('[data-line]')) el.nextElementSibling.querySelector('.n').textContent = `(${count.get(el.dataset.line) || 0})`;
+    return;
+  }
+  renderLines.key = key;
+  $('lines').innerHTML = [...count].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([l, n]) =>
+    `<label><input type="checkbox" data-line="${esc(l)}" ${S.off.includes(l) ? '' : 'checked'}><span>${esc(l)} <span class="n">(${n})</span></span></label>`).join('');
+}
+$('lines').addEventListener('change', (e) => {
+  const l = e.target.dataset?.line; if (l == null) return;
+  S.off = e.target.checked ? S.off.filter((x) => x !== l) : [...new Set([...S.off, l])];
+  save(); renderLines(); render();
+});
 
 // Passages devant la rue = arrivée - décalage / départ + décalage
 function passages() {
   if (!data) return [];
   return data.items
-    .filter((x) => S.dep || x.type === 'arrival')
+    .filter((x) => (S.dep || x.type === 'arrival') && !S.off.includes(lineLabel(x)))
     .map((x) => {
       const t = new Date(x.time).getTime();
       return { ...x, at: x.type === 'arrival' ? t - S.arrOff * MIN : t + S.depOff * MIN, nz: !!NZ[nzKey(x)] };
@@ -429,7 +462,7 @@ function render() {
   $('clock').textContent = new Date(now).toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris' });
   if (!data) return;
 
-  $('src').textContent = data.source === 'live' ? 'LIVE' : 'DÉMO';
+  $('src').textContent = { live: 'LIVE', opendata: 'OPEN DATA', demo: 'DÉMO' }[data.source];
   $('src').className = 'badge-src ' + data.source;
   $('gen').textContent = '· Maj ' + hm(new Date(data.generatedAt));
   $('lg-dep').style.display = S.dep ? '' : 'none';
@@ -497,8 +530,10 @@ function render() {
 }
 
 function renderTimeline(list, now) {
-  const recent = list.filter((p) => p.at < now && p.at >= now - 10 * MIN);
-  const future = list.filter((p) => p.at >= now).slice(0, 40);
+  // « à l'instant » (passé depuis moins de 30 s) reste sous la barre « maintenant », avec les passages à venir
+  const JUST = MIN / 2;
+  const recent = list.filter((p) => p.at < now - JUST && p.at >= now - 10 * MIN);
+  const future = list.filter((p) => p.at >= now - JUST).slice(0, 40);
   // texte noir ou blanc selon la luminance de la couleur de ligne
   const ink = (hex) => {
     const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16 & 255, n >> 8 & 255, n & 255];
@@ -507,7 +542,7 @@ function renderTimeline(list, now) {
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const row = (p, past) => {
     const mins = Math.round((p.at - now) / MIN);
-    const cd = past ? (mins >= 0 ? "à l'instant" : `il y a ${-mins} min`) : mins <= 0 ? 'maintenant' : mins < 60 ? `dans ${mins} min` : `dans ${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')}`;
+    const cd = past ? `il y a ${Math.max(1, -mins)} min` : mins <= 0 ? (p.at < now ? "à l'instant" : 'maintenant') : mins < 60 ? `dans ${mins} min` : `dans ${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')}`;
     const station = new Date(p.time), base = new Date(p.baseTime);
     rowsById.set(p.id, p);
     return `<li class="row ${past ? 'past' : ''} ${p.nz ? 'noisy' : ''}">
@@ -518,6 +553,7 @@ function renderTimeline(list, now) {
           <span>${esc(p.number)}</span>
           <span class="kind">${p.type === 'arrival' ? '↘ arrivée' : '↗ départ'} ${hm(station)}</span>
           ${p.delayMin > 0 ? `<span class="delay">+${p.delayMin} min</span>` : ''}
+          ${p.realtime === false ? '<span class="kind" title="Pas de temps réel pour ce train : horaire prévu, retard inconnu">prévu</span>' : ''}
           ${p.nz ? '<span class="tagnz">🔊 bruyant</span>' : ''}
         </div>
         <div class="l2">${esc(p.direction)}</div>

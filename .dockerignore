@@ -1,5 +1,8 @@
-# Seuls public/ et deploy/nginx/*.conf|*.inc entrent dans l'image
+# Seuls public/, la config nginx et les sources Go de l'open data entrent dans le contexte de build
 *
 !public/
 !deploy/nginx/rails-semprun.conf
 !deploy/nginx/rails-sncf-proxy.inc
+!deploy/docker/
+!opendata/*.go
+!opendata/go.mod

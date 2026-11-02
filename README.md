@@ -4,15 +4,23 @@ Timeline temps réel des trains de **Paris Gare de Lyon**, triée par heure de p
 de maintenant, pour que les riverains de la rue Jorge Semprún sachent quand ouvrir ou fermer leurs fenêtres.
 Chaque locataire a sa propre instance et y marque les trains qu'il trouve bruyants.
 
-**100 % statique + nginx** : pas de serveur applicatif ni de base de données.
+**Statique + nginx** : pas de serveur applicatif ni de base de données. Seul un petit binaire Go
+(6,6 Mo, bibliothèque standard) prépare les données ouvertes SNCF de secours.
 
 ## Lancer en local
 
 ```bash
-scripts/dev.sh            # nginx officiel via Docker, http://localhost:8080
+scripts/dev.sh            # image du projet via Docker, http://localhost:8080
 ```
 
-Sans clé API SNCF, l'app passe automatiquement en **mode démo** (données simulées).
+Sources de données, dans l'ordre :
+
+| Badge | Source | Quand |
+|---|---|---|
+| **LIVE** | API SNCF (clé requise) : tous les trains en temps réel | clé installée et API joignable |
+| **OPEN DATA** | Données ouvertes SNCF, sans clé : horaires prévus + retards temps réel (surtout TGV/Intercités, une partie des RER D / R) ; les trains sans temps réel sont marqués « prévu » | API SNCF en erreur |
+| **DÉMO** | Données simulées | ni l'un ni l'autre |
+
 Forcer la démo : `http://localhost:8080/?demo`.
 
 Avec une clé (gratuite : https://numerique.sncf.com/startup/api/) :
@@ -28,12 +36,15 @@ docker exec rails-semprun nginx -s reload
 navigateur ──► nginx ──┬─ /                    fichiers statiques (public/)
                        ├─ /sncf/arrivals       relais api.sncf.com : ajoute la clé, cache 60 s
                        ├─ /sncf/departures     (seules ces 2 URL, uniquement Gare de Lyon)
+                       ├─ /opendata.json       secours : préparé par opendata (Go, toutes les 2 min)
                        ├─ /declarer?…          écrit 1 ligne dans data/declarations.jsonl (journal nginx)
                        └─ /declarations.jsonl  lecture de mes trains bruyants
 ```
 
 - `public/index.html` : interface.
-- `public/data.js` : appels API SNCF, conversion des horaires, démo, trains bruyants.
+- `public/data.js` : appels API SNCF, secours open data, démo, trains bruyants.
+- `opendata/main.go` : télécharge les horaires théoriques SNCF et Transilien (GTFS, 1×/6 h) et le temps réel
+  (GTFS-RT, transport.data.gouv.fr), garde Gare de Lyon et écrit `data/opendata.json`. Cache dans `data/cache/`.
 - `deploy/nginx/rails-semprun.conf` : configuration nginx (bloc `http`).
 - `deploy/nginx/rails-sncf-proxy.inc` : réglages du relais SNCF.
 
@@ -66,6 +77,11 @@ sudo chown www-data: /var/www/rails/data
 sudo cp -r deploy/nginx/* /etc/nginx/conf.d/          # rails-semprun.conf, rails-sncf-proxy.inc, secrets/
 sudo scripts/set-sncf-key.sh VOTRE_CLE /etc/nginx/conf.d/secrets/sncf_auth.inc
 sudo nginx -t && sudo systemctl reload nginx
+# secours open data : compiler le binaire Go (sans installer Go, via Docker)
+docker run --rm -v "$PWD/opendata:/src" -w /src -e CGO_ENABLED=0 golang:1.25-alpine go build -ldflags="-s -w" -o opendata .
+sudo install -m 755 opendata/opendata /usr/local/bin/opendata
+sudo cp deploy/systemd/rails-opendata.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now rails-opendata
 ```
 
 Puis ajouter `server_name` et HTTPS (certbot) dans `rails-semprun.conf`.
@@ -86,7 +102,8 @@ docker run -d -p 80:80 \
   melvinvmegen/nuisance-sonore-train
 ```
 
-Le volume `rails-data` conserve `declarations.jsonl` d'une version à l'autre.
+Le volume `rails-data` conserve `declarations.jsonl` et le cache open data d'une version à l'autre.
+Le script open data tourne dans le conteneur (désactivable avec `-e OPENDATA=0`).
 
 **CI** (`.github/workflows/docker.yml`) : PR → build + `nginx -t` sans push (`NO_PUSH=1`) ; push sur `main` → `:latest` ;
 tag git → `:<tag>` + `:latest`. Secrets du dépôt : `DOCKER_USERNAME`, `DOCKER_PASSWORD` (jeton d'accès Docker Hub).
@@ -97,6 +114,7 @@ tag git → `:<tag>` + `:latest`. Secrets du dépôt : `DOCKER_USERNAME`, `DOCKE
 - **Bande 60 min** et **vue journée** (une ligne par heure : passages, calme, nombre de trains).
 - **Timeline** : 10 dernières minutes en grisé, puis les prochains passages, avec retards.
 - **Trains bruyants 🔊** : marquage par passage, liste dans les réglages, option « ne compter que mes trains bruyants ».
+- **Lignes prises en compte** : une case par ligne (RER D, TGV INOUI, Transilien R…) dans les réglages ; une ligne décochée disparaît du statut, des bandes et de la timeline.
 - **Réglages** (dans le navigateur) : départs inclus (par défaut), décalage gare ↔ rue, durée du bruit,
   accalmie minimale, notification 2 min avant un passage.
 - **Ma position** : adresse saisie (géocodée par la Géoplateforme IGN, `data.geopf.fr`, gratuit, sans clé)
@@ -105,6 +123,9 @@ tag git → `:<tag>` + `:latest`. Secrets du dépôt : `DOCKER_USERNAME`, `DOCKE
   arrondi à 0,5 min. Au-delà de 8 km, retour au réglage manuel. Décochable pour régler à la main.
 
 ## Limites du POC
+
+- Mode open data : la plupart des RER D / Transilien n'ont pas de temps réel (horaire prévu, ni retard ni suppression),
+  et un train marqué 🔊 en open data peut ne pas être reconnu avec l'API SNCF (libellés de lignes différents).
 
 - L'heure de passage devant la rue est **estimée** depuis l'heure en gare (distance à vol d'oiseau ÷ vitesse, ou 2 min par défaut). À calibrer.
 - La gare de référence reste Paris Gare de Lyon, quelle que soit la position.

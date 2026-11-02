@@ -1,0 +1,19 @@
+# Installation sans Docker : prépare l'open data SNCF (secours sans clé API) toutes les 2 min.
+# Compiler le binaire (Go 1.23+, ou via Docker sans installer Go) :
+#   docker run --rm -v "$PWD/opendata:/src" -w /src -e CGO_ENABLED=0 golang:1.25-alpine go build -ldflags="-s -w" -o opendata .
+#   sudo install -m 755 opendata/opendata /usr/local/bin/opendata
+#   sudo cp deploy/systemd/rails-opendata.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rails-opendata
+[Unit]
+Description=Trains Gare de Lyon : open data SNCF (secours)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=www-data
+ExecStart=/usr/local/bin/opendata --out /var/www/rails/data/opendata.json --loop 120
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

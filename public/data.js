@@ -1,6 +1,7 @@
 // Couche données, 100 % navigateur.
 // - Trains : API SNCF (Navitia) via le relais nginx /sncf/{arrivals,departures} (nginx ajoute la clé et met en cache).
-//   Si le relais répond en erreur (pas de clé, API en panne…) → données de démo simulées.
+//   Si le relais répond en erreur (pas de clé, API en panne…) → open data SNCF (/opendata.json),
+//   et si lui aussi manque → données de démo simulées.
 // - Mes trains bruyants : GET /declarer?… (nginx l'écrit dans son journal) et lecture de /declarations.jsonl.
 
 const TrainData = (() => {
@@ -58,7 +59,9 @@ const TrainData = (() => {
       const actual = parseNavitia(type === 'arrival' ? sdt.arrival_date_time : sdt.departure_date_time);
       const base = parseNavitia(type === 'arrival' ? sdt.base_arrival_date_time : sdt.base_departure_date_time) || actual;
       const mode = di.commercial_mode || di.physical_mode || 'Train';
+      const term = it.route?.direction?.stop_area?.coord; // terminus du trajet, sert à repérer le sens (voir throughOnce)
       return {
+        towardStreet: term ? streetSide(+term.lat, +term.lon) : null,
         id: `${type}-${di.trip_short_name || di.headsign}-${base?.toISOString()}`,
         type, mode, line: di.code || '',
         time: actual?.toISOString(), baseTime: base?.toISOString(),
@@ -68,6 +71,26 @@ const TrainData = (() => {
         color: di.color ? `#${di.color}` : null,
       };
     }).filter((x) => x.time && !EXCLUDE_LINES.includes(`${x.mode} ${x.line}`.toLowerCase().trim()));
+  }
+
+  // ---------- Trains qui traversent la gare (RER D) : un seul passage devant la rue ----------
+  // Les voies qui longent la rue partent de la gare vers le sud-est (mêmes valeurs que opendata/main.go).
+  const GDL = [48.8443, 2.3739], STREET_DIR = [-0.40, 0.92]; // (nord, est) unitaire : gare → voies côté rue
+  const streetSide = (lat, lon) => (lat - GDL[0]) * STREET_DIR[0] + (lon - GDL[1]) * 0.658 * STREET_DIR[1] > 0;
+  // Un train présent en arrivée ET en départ traverse la gare : s'il repart vers la rue, il la longe après son départ
+  // (on retire l'arrivée), sinon avant son arrivée (on retire le départ). Sens inconnu : on garde les deux.
+  function throughOnce(arrivals, departures) {
+    const MAX_STOP = 15 * 60e3;
+    const byNum = new Map(departures.map((d) => [d.number, d]));
+    const dropped = new Set();
+    for (const a of arrivals) {
+      const d = byNum.get(a.number);
+      if (!a.number || !d || Math.abs(new Date(d.time) - new Date(a.time)) > MAX_STOP) continue;
+      const toward = d.towardStreet ?? a.towardStreet;
+      if (toward === true) dropped.add(a);
+      else if (toward === false) dropped.add(d);
+    }
+    return [...arrivals, ...departures].filter((x) => !dropped.has(x));
   }
 
   // ---------- Démo : grille simulée, identique chaque jour ----------
@@ -119,20 +142,38 @@ const TrainData = (() => {
     return items;
   }
 
+  // ---------- Secours : open data SNCF préparé côté serveur (opendata/main.go → /opendata.json) ----------
+  // Horaires prévus + retards temps réel quand ils existent (surtout TGV/Intercités) ; item.realtime l'indique.
+  async function fetchOpenData(today) {
+    const r = await fetch('/opendata.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error(`données ouvertes : HTTP ${r.status}`);
+    const j = await r.json();
+    if (j.day !== today) throw new Error('données ouvertes pas à jour (autre journée)');
+    if (Date.now() - new Date(j.generatedAt) > 15 * 60e3) throw new Error('données ouvertes figées depuis plus de 15 min');
+    return j;
+  }
+
+  // API SNCF → open data SNCF → démo
   async function load({ forceDemo = false } = {}) {
     const { today, dayStart, dayEnd, to } = dayRange();
-    let source = 'live', items, error = null;
+    let source = 'live', items, error = null, realtimeAt = null;
     if (forceDemo) { source = 'demo'; items = demoData(dayStart, to); }
     else {
       try {
         const [a, d] = await Promise.all([fetchKind('arrivals', today), fetchKind('departures', today)]);
-        items = [...a, ...d];
+        items = throughOnce(a, d);
       } catch (e) {
-        source = 'demo'; error = e.message; items = demoData(dayStart, to);
+        error = e.message;
+        try {
+          const j = await fetchOpenData(today);
+          source = 'opendata'; items = j.items; realtimeAt = j.realtimeAt;
+        } catch (e2) {
+          source = 'demo'; error += ' · ' + e2.message; items = demoData(dayStart, to);
+        }
       }
     }
     items.sort((x, y) => new Date(x.time) - new Date(y.time));
-    return { source, error, items, dayStart: dayStart.toISOString(), dayEnd: dayEnd.toISOString(), generatedAt: new Date().toISOString() };
+    return { source, error, items, realtimeAt, dayStart: dayStart.toISOString(), dayEnd: dayEnd.toISOString(), generatedAt: new Date().toISOString() };
   }
 
   return { load };

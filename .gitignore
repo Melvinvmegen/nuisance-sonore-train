@@ -1,3 +1,5 @@
 deploy/nginx/secrets/*
 !deploy/nginx/secrets/.gitkeep
 data/
+__pycache__/
+opendata/opendata
